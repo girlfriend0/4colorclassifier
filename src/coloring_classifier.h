@@ -8,11 +8,13 @@
 #include <cstdint>
 #include <vector>
 #include <cstring>
+#include <map>
 #include <unordered_map>
 #include "BOB_hash.h"
 #include <unordered_set>
 #include <list>
 #include <queue>
+#include <algorithm>
 #include <ctime>
 
 using namespace std;
@@ -22,6 +24,7 @@ BOBHash * hash1, * hash2;
 template<uint32_t bucket_num, uint32_t COLOR_NUM = 4, bool verbose = 0>
 class ColoringClassifier
 {
+protected:
     uint8_t buckets[bucket_num];
 private:
     template<uint32_t hash_range>
@@ -100,8 +103,9 @@ public:
 
 protected:
     typedef Edge<bucket_num> CCEdge;
-    vector<CCEdge *> pos_edges, neg_edges;
-private:
+    unordered_set<CCEdge *> pos_edges, neg_edges;
+    unordered_map<uint64_t, map<int, CCEdge *>> pos_map, neg_map;
+public:  // TODO: change to protected
     struct VerboseBuckets;
 
     struct VerboseGroup
@@ -122,6 +126,7 @@ private:
     struct VerboseBuckets
     {
         int color;
+        uint32_t id;
         vector<CCEdge *> pos_edges, neg_edges;
         VerboseBuckets * root_bucket;
         VerboseBuckets * next_bucket;
@@ -135,8 +140,25 @@ private:
             last_son = this; // only useful when root
             pos_edges.clear();
             neg_edges.clear();
-
             group.back_pointer = this;
+        }
+
+        void clear()
+        {
+            color = -1;
+            root_bucket = this;
+            next_bucket = NULL;
+            last_son = this; // only useful when root
+            pos_edges.clear();
+            neg_edges.clear();
+            group.back_pointer = this;
+        }
+
+        void reset_root()
+        {
+            root_bucket = this;
+            next_bucket = NULL;
+            last_son = this; // only useful when root
         }
 
         VerboseBuckets * get_root_bucket()
@@ -160,7 +182,8 @@ private:
             new_root->last_son->next_bucket = old_root;
             new_root->last_son = old_root->last_son;
         }
-    } v_buckets[bucket_num];
+    };
+    VerboseBuckets v_buckets[bucket_num];
 
     void synchronize_all()
     {
@@ -431,8 +454,10 @@ COLOR_FAILED:
 
         bool run()
         {
+
             while (rotate_queue.size()) {
                 VerboseGroup * g = rotate_queue.front();
+
                 if (g->neighbours.size() - g->deleted_neighbour_num < COLOR_NUM) {
                     sorted.push_back(g);
 //                    remained_set.erase(g);
@@ -539,8 +564,10 @@ COLOR_FAILED:
             }
 
             // create new neighbours
-            for (VerboseGroup * p: nbs) {
-                for (VerboseGroup * n: p->neighbours) {
+            for (VerboseGroup * p: nbs)
+            {
+                for (VerboseGroup * n: p->neighbours)
+                {
                     if (!n->used) {
                         new_nbs.insert(n);
                         n->color = n->back_pointer->color;
@@ -609,10 +636,11 @@ public:
         edge_collision_num = 0;
         affected_node_num = 0;
         memset(buckets, 0, sizeof(buckets));
-
+        for (int i = 0; i < bucket_num; i++)
+            v_buckets[i].id = i;
         if (!hash1) {
             srand(time(0));
-            hash1 = new BOBHash(rand());
+            hash1 = new BOBHash(rand());  // TODO: rand()
             hash2 = new BOBHash(rand());
         }
     };
@@ -626,33 +654,43 @@ public:
         hash2 = new BOBHash(rand());
     }
 
+    void clear_edge()
+    {
+        for (auto e: pos_edges)
+            delete e;
+        for (auto e: neg_edges)
+            delete e;
+        pos_edges.clear();
+        neg_edges.clear();
+        pos_map.clear();
+        neg_map.clear();
+    }
+
+    /*
     void set_pos_edge(uint64_t * items, int num) {
-        pos_edges.resize(num);
         for (int i = 0; i < num; ++i) {
-            pos_edges[i] = new CCEdge(items[i]);
+            pos_edges.insert(new CCEdge(items[i]));
         }
     };
 
     void set_pos_edge(const char items[][MAX_LEN], int num) {
-        pos_edges.resize(num);
         for (int i = 0; i < num; ++i) {
-            pos_edges[i] = new CCEdge(items[i]);
+            pos_edges.insert(new CCEdge(items[i]));
         }
     }
 
     void set_neg_edge(uint64_t * items, int num) {
-        neg_edges.resize(num);
         for (int i = 0; i < num; ++i) {
-            neg_edges[i] = new CCEdge(items[i]);
+            neg_edges.insert(new CCEdge(items[i]));
         }
     }
 
     void set_neg_edge(const char items[][MAX_LEN], int num) {
-        neg_edges.resize(num);
         for (int i = 0; i < num; ++i) {
-            neg_edges[i] = new CCEdge(items[i]);
+            neg_edges.insert(new CCEdge(items[i]));
         }
     }
+    */
 
     bool build() {
         // use neg unordered_set build group
@@ -695,12 +733,14 @@ public:
         return true;
     }
 
-    bool insert(uint64_t item, int class_id)
+    bool inside_insert(uint64_t item, int class_id, CCEdge* e, int offset=-1)
     {
         if (class_id == 0) {
             // if insert an pos edge
-            CCEdge * e = new CCEdge(item);
-            pos_edges.push_back(e);
+            pos_edges.insert(e);
+            if (pos_map.find(item) == pos_map.end())
+                pos_map.insert(make_pair(item, map<int, CCEdge*>()));
+            pos_map.find(item)->second.insert(make_pair(offset, e));
 
             auto bucket_a = &v_buckets[e->hash_val_a];
             auto bucket_b = &v_buckets[e->hash_val_b];
@@ -721,14 +761,17 @@ public:
             root_a->group.neighbours.insert(&(root_b->group));
             root_b->group.neighbours.insert(&(root_a->group));
 
-            if (bucket_a->color != bucket_b->color) {
+            if (bucket_a->color != bucket_b->color and bucket_a->color != -1 and bucket_b->color != -1) {
                 return true;
             }
 
             return try_color_two_bucket(bucket_a, bucket_b);
         } else {
-            neg_edges.push_back(new CCEdge(item));
-            CCEdge * e = neg_edges.back();
+
+            neg_edges.insert(e);
+            if (neg_map.find(item) == neg_map.end())
+                neg_map.insert(make_pair(item, map<int, CCEdge*>()));
+            neg_map.find(item)->second.insert(make_pair(offset, e));
 
             auto bucket_a = &v_buckets[e->hash_val_a];
             auto bucket_b = &v_buckets[e->hash_val_b];
@@ -758,11 +801,150 @@ public:
             // reset all group pointer
             bucket_b->set_root_bucket(bucket_a->get_root_bucket());
 
-            if (bucket_a->color == bucket_b->color) {
+            if (bucket_a->color == bucket_b->color and bucket_a->color != -1) {
                 return true;
             }
 
             return try_color_two_bucket(bucket_a);
+        }
+    }
+
+    bool insert(uint64_t item, int class_id, int offset=-1)
+    {
+        CCEdge * e = (offset == -1? new CCEdge(item) : new CCEdge(CCEdge(item), offset));
+        // cout << e->hash_val_a << " " << e->hash_val_b << endl;
+        return inside_insert(item, class_id, e, offset);
+    }
+
+    bool insert(CCEdge& edge, int class_id, int offset=-1)
+    {
+        CCEdge * e = (offset == -1? new CCEdge(edge) : new CCEdge(edge, offset));
+        return inside_insert(edge.e, class_id, e, offset);
+    }
+
+    unordered_set<uint32_t> neg_bfs(uint32_t hash_a, uint32_t hash_b)
+    {
+        queue<uint32_t> q;
+        unordered_set<uint32_t> result;
+        q.push(hash_a);
+        while(!q.empty())
+        {
+            if (result.find(q.front()) == result.end())
+            {
+                result.insert(q.front());
+                for (auto e: v_buckets[q.front()].neg_edges)
+                    if (e->available)
+                        {
+                            uint32_t other = e->get_other_val(q.front());
+                            if (other == hash_b)
+                            {
+                                result.insert(other);
+                                return result;
+                            }
+                            if (result.find(other) == result.end())
+                                q.push(other);
+                        }
+            }
+            q.pop();
+        }
+        return result;
+    }
+
+    void update_verbose_group(VerboseBuckets* root, VerboseGroup* old_group)
+    {
+        root->group = VerboseGroup();
+        root->group.back_pointer = root;
+        root->group.color = root->color;
+        VerboseBuckets* b = root;
+        for (; b != NULL; b = b->next_bucket)
+            for (auto e: b->pos_edges)
+                if (e->available)
+                {
+                    root->group.neighbours.insert(&(v_buckets[e->get_other_val(b->id)].get_root_bucket()->group));
+                }
+        for (auto neighbour: root->group.neighbours)
+        {
+            neighbour->neighbours.erase(old_group);
+            neighbour->neighbours.insert(&(root->group));
+        }
+    }
+
+    void remove(uint64_t item, int class_id, int offset=-1)
+    {
+        if (class_id == 0)
+        {
+            CCEdge *e = pos_map.find(item)->second.find(offset)->second;
+            pos_edges.erase(e);
+            pos_map.find(item)->second.erase(offset);
+            vector<CCEdge*> &va = v_buckets[e->hash_val_a].pos_edges;
+            va.erase(find(begin(va), end(va), e));
+            vector<CCEdge*> &vb = v_buckets[e->hash_val_b].pos_edges;
+            vb.erase(find(begin(vb), end(vb), e));
+
+            if (e->available)
+            {
+                uint32_t hash_a = e->hash_val_a, root_a = v_buckets[e->hash_val_a].get_root_bucket()->id,
+                        root_b = v_buckets[e->hash_val_b].get_root_bucket()->id;
+                VerboseBuckets *a = v_buckets + root_a;
+                bool flag = false;
+                for (; a != NULL; a = a->next_bucket)
+                {
+                    for (auto ep: a->pos_edges)
+                        if (ep->available)
+                            if (v_buckets[ep->get_other_val(a->id)].get_root_bucket()->id == root_b)
+                            {
+                                flag = true;
+                                break;
+                            }
+                    if (flag)
+                        break;
+                }
+                if (!flag)
+                {
+                    v_buckets[root_a].group.neighbours.erase(&(v_buckets[root_b].group));
+                    v_buckets[root_b].group.neighbours.erase(&(v_buckets[root_a].group));
+                }
+            }
+            delete e;
+        }
+
+        else
+        {
+            CCEdge *e = neg_map.find(item)->second.find(offset)->second;
+            neg_edges.erase(e);
+            neg_map.find(item)->second.erase(offset);
+            vector<CCEdge*> &va = v_buckets[e->hash_val_a].neg_edges;
+            va.erase(find(begin(va), end(va), e));
+            vector<CCEdge*> &vb = v_buckets[e->hash_val_b].neg_edges;
+            vb.erase(find(begin(vb), end(vb), e));
+
+            if (e->available)
+            {
+                uint32_t hash_a = e->hash_val_a, hash_b = e->hash_val_b;
+                VerboseGroup *old_group = &(v_buckets[hash_a].get_root_bucket()->group);
+                if (v_buckets[hash_a].get_root_bucket() == v_buckets[hash_b].get_root_bucket())
+                {
+                    unordered_set<uint32_t> set_a = neg_bfs(hash_a, hash_b);
+                    if (set_a.find(hash_b) == set_a.end())
+                    {
+                        unordered_set<uint32_t> set_b = neg_bfs(hash_b, hash_a);
+                        for (auto v: set_a)
+                            (v_buckets + v)->reset_root();
+                        for (auto v: set_a)
+                            if (v != hash_a)
+                                (v_buckets + v)->set_root_bucket(v_buckets + hash_a);
+                        for (auto v: set_b)
+                            (v_buckets + v)->reset_root();
+                        for (auto v: set_b)
+                            if (v != hash_b)
+                                (v_buckets + v)->set_root_bucket(v_buckets + hash_b);
+                        update_verbose_group(v_buckets[hash_a].get_root_bucket(), old_group);
+                        update_verbose_group(v_buckets[hash_b].get_root_bucket(), old_group);
+                    }
+                }
+            }
+
+            delete e;
         }
     }
 
@@ -789,13 +971,15 @@ public:
         return c1 == c2;
     }
 
-    bool exp_build(uint64_t * keys, int num)
+    /*
+    bool exp_build(uint64_t * keys, int num)  // out-of-date
     {
         set_pos_edge(keys, num / 2);
         set_neg_edge(keys + num / 2, num - (num / 2));
 
         return build();
     }
+    */
 
     void init()
     {

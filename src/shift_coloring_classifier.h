@@ -22,6 +22,10 @@ public:
 
     bool build(vector<pair<uint64_t, uint32_t>> & kvs, int data_num)
     {
+        Parent::clear_edge();
+        for (int i = 0; i < bucket_num; i++)
+            Parent::v_buckets[i].clear();
+
         int counters[class_num][2];
         memset(counters, 0, sizeof(counters));
 
@@ -43,13 +47,17 @@ public:
             uint32_t val = kvs[i].second;
 
             typename Parent::CCEdge e(key);
-
+            Parent::pos_map.insert(make_pair(key, map<int, typename Parent::CCEdge*>()));
+            Parent::neg_map.insert(make_pair(key, map<int, typename Parent::CCEdge*>()));
             for (int k = 0; k < max_offset; ++k) {
+                auto p_e = new typename Parent::CCEdge(e, k);
                 if ((val >> k) & 1) {
-                    Parent::pos_edges.push_back(new typename Parent::CCEdge(e, k));
+                    Parent::pos_edges.insert(p_e);
+                    Parent::pos_map.find(key)->second.insert(make_pair(k, p_e));
                 }
                 else {
-                    Parent::neg_edges.push_back(new typename Parent::CCEdge(e, k));
+                    Parent::neg_edges.insert(p_e);
+                    Parent::neg_map.find(key)->second.insert(make_pair(k, p_e));
                 }
             }
         }
@@ -57,7 +65,7 @@ public:
         return ColoringClassifier<bucket_num, color_num>::build();
     }
 
-    uint32_t query(uint64_t key)
+    vector<uint32_t> query(uint64_t key)
     {
         typename Parent::CCEdge e(key);
 
@@ -69,8 +77,42 @@ public:
             ret |= ((c1 == c2 ? 0 : 1u) << k);
         }
 
-        return ret;
+        return vector<uint32_t>(1, ret);
     }
+
+    vector<uint32_t> query_multiway(uint64_t key)
+    {
+        return query(key);
+    }
+
+    bool insert(uint64_t item, uint32_t class_id)
+    {
+        bool result = true;
+        typename Parent::CCEdge e(item);
+        for (int k = 0; k < max_offset; ++k)
+        {
+            if ((class_id >> k) & 1)
+                result &= Parent::insert(e, 0, k);
+            else
+                result &= Parent::insert(e, 1, k);
+        }
+        return result;
+    }
+
+    void remove(uint64_t item, uint32_t class_id)
+    {
+        for (int k = 0; k < max_offset; ++k)
+        {
+            if ((class_id >> k) & 1)
+                Parent::remove(item, 0, k);
+            else
+                Parent::remove(item, 1, k);
+        }
+        Parent::pos_map.erase(item);
+        Parent::neg_map.erase(item);
+        // cout << Parent::v_buckets[9].get_root_bucket() << " " << Parent::v_buckets[10].get_root_bucket() << endl;
+    }
+
 };
 
 #endif //COLORINGCLASSIFER_SHIFT_COLORING_FILTER_H
